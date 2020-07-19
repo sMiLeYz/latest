@@ -135,7 +135,7 @@ print_update_info () {
 		echo -e "  ${GREEN}Client is up to date, don't need to update${NOCOLOR}"
 		echo
 		echo
-		echo -e "Hint: ${GRAY}you can run ${CYAN}$script_basename --force${NOCOLOR} or ${CYAN}$script_basename 0.1-13.1 --force${NOCOLOR} to force update"
+		echo -e "Hint: ${GRAY}you can run ${CYAN}$script_basename --force${NOCOLOR} or ${CYAN}$script_basename 0.1-14 --force${NOCOLOR} to force update"
 		exit "$repo_connectivity_status_exitcode" # die() isn't suitable here
 	fi
 
@@ -158,8 +158,8 @@ print_script_usage () {
 	echo -e "  Usage: ${CYAN}${script_basename} [n.n-nn|master]${NOCOLOR}"
 	echo
 	echo -e "         ${CYAN}${script_basename}${NOCOLOR}                       update to the latest release version"
-	echo -e "         ${CYAN}${script_basename} 0.1-13.1${NOCOLOR}                update to release 0.1-13.1"
-	echo -e "         ${CYAN}${script_basename} 0.1-13.1 --force${NOCOLOR}        force update to release 0.1-13.1"
+	echo -e "         ${CYAN}${script_basename} 0.1-14${NOCOLOR}                update to release 0.1-14"
+	echo -e "         ${CYAN}${script_basename} 0.1-14 --force${NOCOLOR}        force update to release 0.1-14"
 	echo
 	echo -e "         ${CYAN}${script_basename} master${NOCOLOR}                stable dev build (beta)"
 	echo
@@ -235,7 +235,7 @@ parse_arguments () {
 				download_from_custom_repo_FLAG=1
 				;;
 			*[0-9].[0-9]*)
-				# roughly correct pattern for Client release version: 0.1 / 0.1-13.1
+				# roughly correct pattern for Client release version: 0.1 / 0.1-14
 				user_defined_version_ARG="$this_ARG"
 				;;
 			'--help' | '-h' | *)
