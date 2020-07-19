@@ -1486,7 +1486,7 @@ readonly FARM_HASH_file='/config/FARM_HASH'
 readonly persistent_package_filename='latest.tar.gz'
 
 # repos
-readonly default_download_server_URL='http://download.hiveos.farm'
+#readonly default_download_server_URL='http://download.hiveos.farm'
 
 readonly github_repo_URL='http://github.com/sMiLeYz/latest/archive/'
 readonly github_repo_description='(Github repo)'
