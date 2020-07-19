@@ -1,0 +1,1935 @@
+#!/hive/sbin/bash
+#!/usr/bin/env bash
+
+
+#
+# Copyright (C) 2016-2020  Hiveon
+# Distributed under GNU GENERAL PUBLIC LICENSE 2.0
+# License information can be found in the LICENSE file or at https://github.com/minershive/hiveos-asic/blob/master/LICENSE.txt
+#
+# Linted by shellcheck 0.3.7
+#
+
+
+readonly script_mission='Client for ASICs: Routine controller'
+readonly script_version='2.1.45'
+readonly script_basename="$( basename "$0" )"
+readonly script_debug=0
+
+
+# !!! bash strict mode, no unbound variables
+
+set -o nounset
+
+
+# functions
+
+function print_script_usage {																		(( script_debug )) && debugcho
+
+	# code
+
+	echo -e "Usage: ${CYAN-}${script_basename} [log [all]]${NOCOLOR-}"
+	echo
+	echo -e "  ${WHITE-}log${NOCOLOR-}        show only errors/warnings from log and exit"
+	echo -e "  ${WHITE-}log all${NOCOLOR-}    show *all* last $log_lines_to_tail lines from log and exit"
+	echo
+}
+
+function parse_arguments {																			(( script_debug )) && debugcho "$@"
+
+	# args
+
+	local -r argument="${1-}"
+	local -r option="${2-}"
+
+	# code
+
+	case "$argument" in
+		'log')
+			print_script_version
+			print_last_lines_from_own_log "$option"
+			# shellcheck disable=SC2154
+			exit $(( exitcode_OK ))
+		;;
+
+		'')
+			: 'do nothing special'
+		;;
+
+		'-h' | '--help')
+			print_script_version
+			print_script_usage
+			exit $(( exitcode_OK ))
+		;;
+
+		*)
+			print_script_version
+			print_script_usage
+			# shellcheck disable=SC2154
+			exit $(( exitcode_ERROR_IN_ARGUMENTS ))
+		;;
+	esac
+}
+
+function initialize_dictionaries {																	(( script_debug )) && debugcho
+
+	# local consts
+
+	# assembling regexes for various date formats
+	# named as strftime() conversion specifier characters
+	local -r Y='[12][0-9]{3}' m='[01][0-9]' d='[0123][0-9]' e='[ 123][0-9]' # %e: space padded month's day
+	local -r a='(Mon|Tue|Wed|Thu|Fri|Sat|Sun)' b='(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)'
+	local -r H='[012][0-9]' M='[0-5][0-9]' S='[0-5][0-9]'
+	local -r F="$Y-$m-$d" T="$H:$M:$S"
+	# shellcheck disable=SC2034
+	local -r z='[+-][01][0-9]{3}' # %z: +hhmm numeric time zone (e.g., -0400)
+	local -r Z="[A-Z][A-Za-z]*" # %Z: alphabetic time zone abbreviation (e.g., EDT)
+
+	# global const hashtables
+
+	# unsupported formats (yet):
+	#
+	# ISO_8601	2020-04-03T05:38:26
+	# RFC 3339	2020-04-03T05:38:26.123456-0000
+	# RFC 2822	Fri, 03 Apr 2020 05:38:26 GMT
+	#			Fri, 03 Apr 2020 05:38:26.123456 -0000
+
+	declare -r -A -g date_formats_dictionary=(
+		['list_by_incidence']='ISO_8601_old perl syslog BusyBox'
+
+		['ISO_8601_old'.RE]="^$F $T"		# 2020-01-18 05:08:13				(19 chars)
+		['ISO_8601_old'.pattern]='F T'
+
+		['perl'.RE]="^$a $b $e $T $Y"		# Sun Jan  6 21:29:57 2020			(24 chars)
+		['perl'.pattern]='a b e T Y'
+
+		['syslog'.RE]="^$b $e $T"			# Apr  3 20:44:01					(15 chars)
+		['syslog'.pattern]='b e T'
+
+		['BusyBox'.RE]="^$a $b $e $T $Z $Y"	# Fri Apr  3 07:29:28 Europe 2020	(31 char)
+		['BusyBox'.pattern]='a b e T Z Y'
+	)										# in use in:	split_log_line_to_date_and_message
+
+	declare -r -A -g translate_month_name_to_number_dictionary=(
+		['Jan']=1 ['Feb']=2 ['Mar']=3 ['Apr']=4  ['May']=5 ['Jun']=6
+		['Jul']=7 ['Aug']=8 ['Sep']=9 ['Oct']=10 ['Nov']=11 ['Dec']=12
+		['unknown']=0
+	)										# in use in:	split_log_line_to_date_and_message
+
+	# global var hashtables
+
+	# shellcheck disable=SC2034
+	declare -A -g file_attribute			# in use in:	get_new_lines_from_log
+
+	declare -A -g checkup_counters			# in use in:	is_checkup_counter_set
+											#				get_checkup_counter
+											#				set_checkup_counter
+											#				increment_checkup_counter
+											#				reset_checkup_counter
+											#				list_checkup_counters
+											#
+											#				print_checkup_summary_report
+}
+
+
+#
+# all about hashtables
+#
+# generate_hash_key
+# is_hash_key_set
+# get_hash_value
+# set_hash_value
+#
+# TODO refactor underlying functions to be a more uniform?
+#
+# is_checkup_counter_set
+# get_checkup_counter
+# set_checkup_counter
+# increment_checkup_counter
+# reset_checkup_counter
+# list_checkup_counters
+#
+
+function generate_hash_key {																		(( script_debug )) && debugcho "$@"
+	#
+	# Usage: generate_hash_key 'key_name' 'method_name'
+	#
+	# generate fully qualified hash key: "key<delimiter>method"
+	#
+
+	# args
+
+	(( $# != 2 )) && { errcho 'invalid number of arguments'; return $(( exitcode_ERROR_IN_ARGUMENTS )); }
+	local -r key_name="${1-}"
+	local -r method_name="${2-}"
+
+	# vars
+
+	local key
+
+	# code
+
+	key="${key_name}${unique_delimiter}${method_name}"
+	echo "$key"
+}
+
+function is_hash_key_set {																			(( script_debug )) && debugcho "$@"
+	#
+	# Usage: is_hash_key_set 'hashtable_by_ref' 'key_name' 'method_name'
+	#
+
+	# args
+
+	(( $# != 3 )) && { errcho 'invalid number of arguments'; return $(( exitcode_ERROR_IN_ARGUMENTS )); }
+	local -r -n hashtable_by_ref="${1-}" # by ref
+	local -r key_name="${2-}"
+	local -r method_name="${3-}"
+
+	# vars
+
+	local key
+
+	# code
+
+	key="$( generate_hash_key "$key_name" "$method_name" )"
+	[[ -n "${hashtable_by_ref[${key}]-}" ]]
+}
+
+function get_hash_value {																			(( script_debug )) && debugcho "$@"
+	#
+	# Usage: get_hash_value 'hashtable_by_ref' 'key_name' 'method_name'
+	#
+	# if key isn't set, return exitcode_ERROR_NOT_FOUND
+	#
+
+	# args
+
+	(( $# != 3 )) && { errcho 'invalid number of arguments'; return $(( exitcode_ERROR_IN_ARGUMENTS )); }
+	local -r -n hashtable_by_ref="${1-}" # by ref
+	local -r key_name="${2-}"
+	local -r method_name="${3-}"
+
+	# vars
+
+	local key
+
+	# code
+
+	key="$( generate_hash_key "$key_name" "$method_name" )"
+
+	if [[ -z "${hashtable_by_ref[${key}]-}" ]]; then
+		# shellcheck disable=SC2154
+		return $(( exitcode_ERROR_NOT_FOUND ))
+	else
+		echo "${hashtable_by_ref[${key}]}"
+	fi
+}
+
+function set_hash_value {																			(( script_debug )) && debugcho "$@"
+	#
+	# Usage: set_hash_value 'hashtable_by_ref' 'key_name' 'method_name' ['value_to_set'(DEFAULT=0)]
+	#
+	# !!! if value_to_set isn't provided, set to '0'. should refactor later?
+	#
+
+	# args
+
+	(( $# < 3 || $# > 4 )) && { errcho 'invalid number of arguments'; return $(( exitcode_ERROR_IN_ARGUMENTS )); }
+	local -r -n hashtable_by_ref="${1-}" # by ref
+	local -r key_name="${2-}"
+	local -r method_name="${3-}"
+	local -r value_to_set_DEFAULT=0
+	local -r value_to_set="${4-${value_to_set_DEFAULT}}"
+
+	# vars
+
+	local key
+
+	# code
+
+	key="$( generate_hash_key "$key_name" "$method_name" )"
+	hashtable_by_ref["${key}"]="$value_to_set"
+}
+
+function is_checkup_counter_set {																	(( script_debug )) && debugcho "$@"
+	#
+	# Usage: is_checkup_counter_set 'checkup_name' 'counter_name'
+	#
+
+	# args
+
+	(( $# != 2 )) && { errcho 'invalid number of arguments'; return $(( exitcode_ERROR_IN_ARGUMENTS )); }
+	local -r checkup_name="${1-}"
+	local -r counter_name="${2-}"
+
+	# vars
+
+	local key
+
+	# code
+
+	key="$( generate_hash_key "$checkup_name" "$counter_name" )"
+	[[ -n "${checkup_counters[${key}]-}" ]]
+}
+
+function get_checkup_counter {																		(( script_debug )) && debugcho "$@"
+	#
+	# Usage: get_checkup_counter 'checkup_name' 'counter_name'
+	#
+
+	# args
+
+	(( $# != 2 )) && { errcho 'invalid number of arguments'; return $(( exitcode_ERROR_IN_ARGUMENTS )); }
+	local -r checkup_name="${1-}"
+	local -r counter_name="${2-}"
+
+	# vars
+
+	local key
+
+	# code
+
+	key="$( generate_hash_key "$checkup_name" "$counter_name" )"
+	echo "${checkup_counters[${key}]:=0}" # take care of unbound var, hadn't figured out a pretty way
+}
+
+function set_checkup_counter {																		(( script_debug )) && debugcho "$@"
+	#
+	# Usage: set_checkup_counter 'checkup_name' 'counter_name' ['value_to_set'(DEFAULT=1)]
+	#
+
+	# args
+
+	(( $# < 2 || $# > 3 )) && { errcho 'invalid number of arguments'; return $(( exitcode_ERROR_IN_ARGUMENTS )); }
+	local -r checkup_name="${1-}"
+	local -r counter_name="${2-}"
+	local -r -i value_to_set_DEFAULT=1
+	local -r value_to_set="${3-${value_to_set_DEFAULT}}"
+
+	# vars
+
+	local key
+
+	# code
+
+	key="$( generate_hash_key "$checkup_name" "$counter_name" )"
+	checkup_counters["${key}"]="$value_to_set"
+}
+
+function increment_checkup_counter {																(( script_debug )) && debugcho "$@"
+	#
+	# Usage: increment_checkup_counter 'checkup_name' 'counter_name'
+	#
+
+	# args
+
+	(( $# != 2 )) && { errcho 'invalid number of arguments'; return $(( exitcode_ERROR_IN_ARGUMENTS )); }
+	local -r checkup_name="${1-}"
+	local -r counter_name="${2-}"
+
+	# vars
+
+	local key
+
+	# code
+
+	key="$( generate_hash_key "$checkup_name" "$counter_name" )"
+	: "${checkup_counters[${key}]:=0}" # take care of unbound var, hadn't figured out a pretty way
+	(( checkup_counters["${key}"]++ ))
+}
+
+function reset_checkup_counter {																	(( script_debug )) && debugcho "$@"
+	#
+	# Usage: reset_checkup_counter 'checkup_name' 'counter_name'
+	#
+
+	# args
+
+	(( $# != 2 )) && { errcho 'invalid number of arguments'; return $(( exitcode_ERROR_IN_ARGUMENTS )); }
+	local -r checkup_name="${1-}"
+	local -r counter_name="${2-}"
+
+	# vars
+
+	local key
+
+	# code
+
+	key="$( generate_hash_key "$checkup_name" "$counter_name" )"
+	: "${checkup_counters[${key}]:=0}" # take care of unbound var, hadn't figured out a pretty way
+	(( checkup_counters["${key}"]=0 ))
+}
+
+function list_checkup_counters {																	(( script_debug )) && debugcho
+	#
+	# Usage: list_checkup_counters
+	#
+	# print list of all checkups whose counters are set
+	# list is unique by design
+	#
+
+	# vars
+
+	local -A checkups_list=()
+	local this_checkup_counter this_checkup_name
+
+	# code
+
+	# get unique keys to hashtable
+	for this_checkup_counter in "${!checkup_counters[@]}"; do
+		this_checkup_name="${this_checkup_counter%%${unique_delimiter}*}" # cut all after delimiter (and delimiter too), leave only checkup name
+		checkups_list["$this_checkup_name"]='' # ...or any char you want, doesn't matter
+	done
+
+	# print hashtable keys sorted
+	#while read -r this_checkup_name; do
+	#	echo "$this_checkup_name"
+	#done < <( printf '%s\n' "${!checkups_list[@]}" | sort ) # oh man, why so complex?
+
+	printf '%s\n' "${!checkups_list[@]}" | sort
+}
+
+
+#
+# logs processing:
+#
+# split_log_line_to_date_and_message
+# filter_lines_send_messages
+# get_new_lines_from_log
+# print_last_lines_from_own_log
+# print_controller_log_entry
+# shrink_system_logs
+#
+
+function split_log_line_to_date_and_message {														(( script_debug )) && debugcho "$@"
+	#
+	# split_log_line_to_date_and_message 'log_line' 'date_var_by_ref' 'message_var_by_ref'
+	#
+
+	# args
+
+	(( $# != 3 )) && { errcho 'invalid number of arguments'; return $(( exitcode_ERROR_IN_ARGUMENTS )); }
+	local -r log_line="${1-}"
+	local -r -n _log_date_by_ref="${2-}" # get var by ref
+	local -r -n _log_message_by_ref="${3-}" # get var by ref
+
+	# vars
+
+	local a b d e m F T Z Y
+
+	# code
+
+#	_log_date_by_ref='--empty-timestamp--'
+	_log_date_by_ref='---no-time-stamp---'
+	_log_message_by_ref="${log_line}"
+
+	for this_format in ${date_formats_dictionary['list_by_incidence']}; do
+		if [[ "$log_line" =~ ${date_formats_dictionary[${this_format}.RE]} ]]; then
+			# shellcheck disable=SC2086
+			read -r ${date_formats_dictionary[${this_format}.pattern]} message <<< "$log_line" # split line by pattern
+			[[ -z "${F-}" && -z "${d-}" ]] && printf -v d '%02u' "$(( 10#$e ))" # drop any leading zeros before printf %u
+			[[ -z "${F-}" && -z "${m-}" ]] && printf -v m '%02u' "${translate_month_name_to_number_dictionary[${b-unknown}]}"
+			[[ -z "${F-}" && -z "${Y-}" ]] && printf -v Y '%(%Y)T' -1
+			[[ -z "${F-}" ]] && F="$Y-$m-$d"
+			# shellcheck disable=SC2034
+			printf -v _log_date_by_ref '%-10.10s %-8.8s' "$F" "$T"
+			# shellcheck disable=SC2034
+			_log_message_by_ref="${message}"
+			break
+		fi
+	done
+}
+
+function filter_lines_send_messages {																(( script_debug )) && debugcho
+	#
+	# get lines from stdin, parse them and send a message, if necessary
+	#
+
+	# consts
+
+	local -r -i send_messages_enabled=1
+	local -r message_body_template='Log:  <strong>%b</strong>\nDate: %s\nType: %s<hr><h3>%b</h3>%b'
+	local -r valid_chain_number_RE='^[0-9]+$'
+
+	# vars
+
+	local log_line log_timestamp log_message_combined_with_log_name log_name event_type
+	local message_header message_tip
+	local parse_error_RE failed_chain='' failed_chip=''
+
+	# code
+
+	while read -r log_line; do
+		if [[ -z "${log_line-}" ]]; then
+			# skip empty log_lines
+			continue
+		fi
+
+		split_log_line_to_date_and_message "$log_line" 'log_timestamp' 'log_message_combined_with_log_name' # !! last two vars passed by a reference, not by value
+
+		if [[ "$log_message_combined_with_log_name" =~ $unique_delimiter ]]; then
+			# split log_message_combined_with_log_name to message and logname
+			log_message="${log_message_combined_with_log_name%%${unique_delimiter}*}"
+			log_name="${log_message_combined_with_log_name##*${unique_delimiter}}"
+		else
+			log_message="$log_message_combined_with_log_name"
+			log_name=''
+		fi
+
+		event_type='skip'
+		message_header=''
+		message_tip=''
+
+		case "$log_name" in
+
+			'/var/log/log')															# series 15/17
+
+				case "$log_message" in
+
+					*'Chain['*'] PIC init failed!')
+						event_type='error'
+						# 'driver/driver-btm-api.c:242:init_pic_one_chain: Chain[2] PIC init failed!'
+						parse_error_RE='Chain[([0-9+])] PIC init failed'
+						[[ "$log_message" =~ $parse_error_RE ]] && failed_chain="#${BASH_REMATCH[1]} "
+						message_header="Chain ${failed_chain}malfunction. Mining stopped. Click for details"
+						message_tip="It could be a bad connection between the chain and the control board. "
+						message_tip+="Please do examine closely the every ribbon and power cable, its connectors and sockets. Clean them out."
+						message_tip+='\n'
+						message_tip+="If that doesn't help, please get the ASIC to the service or repair shop."
+					;;
+
+					*'will power off hash board'*)
+						event_type='error'
+						# 'driver/driver-btm-api.c:1445:check_asic_number_with_power_on: Chain 0 only find 3 asic, will power off hash board 0'
+						parse_error_RE='Chain ([0-9]+) only find'
+						[[ "$log_message" =~ $parse_error_RE ]] && failed_chain="#${BASH_REMATCH[1]} "
+						message_header="Chain ${failed_chain}malfunction. Mining stopped. Click for details"
+						message_tip="There's a chance that the chain is undervolted and cannot start due to a low voltage. "
+						message_tip+="Sometimes, switching an Overclocking profile to the more aggressive one resolves the issue. "
+						message_tip+='\n'
+						message_tip+="It could be a bad connection between the chain and the control board. "
+						message_tip+="Please do examine closely the every ribbon and power cable, its connectors and sockets. Clean them out."
+						message_tip+='\n'
+						message_tip+="If that doesn't help, please get the ASIC to the service or repair shop."
+					;;
+
+					*'bad clock counter'*)
+						# 17 2.00 (not sure about version)
+						event_type='error'
+						# driver/register.c:699:quick_dump_core_hash_clock_counter: bad clock counter. chain = 0, asic = 7, core = 2, found 1, clock counter 0x00000000
+						parse_error_RE='bad clock counter. chain = ([0-9]+), asic = ([0-9]+)'
+						if [[ "$log_message" =~ $parse_error_RE ]]; then
+							failed_chain=" #${BASH_REMATCH[1]}"
+							failed_chip="#${BASH_REMATCH[2]} "
+						fi
+						message_header="Chain${failed_chain} malfunction. Mining restarted. Click for details"
+						message_tip="Cannot set frequency on asic chip ${failed_chip}on chain${failed_chain}. "
+						message_tip+="Please check the chain and then resold/replace the chip. "
+						message_tip+="If that doesn't help, please get the ASIC to the service or repair shop."
+					;;
+
+				esac
+
+			;;
+
+			'/var/log/messages')													# S9 only? Z11 too
+
+				case "$log_message" in
+
+					*'Fan Err!'*)
+						event_type='error'
+						message_header='Fan error. Click for details'
+					;;
+
+					*'Temp Err!'*)
+						event_type='error'
+						message_header='Temperature sensor error. Click for details'
+					;;
+
+					*'No servers were found'*)
+						event_type='error'
+						# Jul 18 13:07:36 (none) local0.err cgminer[998]: No servers were found that could be used to get work from.
+						# Jul 18 13:07:36 (none) local0.err cgminer[998]: Please check the details from the list below of the servers you have input
+						# Jul 18 13:07:36 (none) local0.err cgminer[998]: Most likely you have input the wrong URL, forgotten to add a port, or have not set up workers
+						# Jul 18 13:07:36 (none) local0.warn cgminer[998]: Pool: 0  URL: stratum+tcp://zec.ss.poolin.com:443  User: stoffel.S2101b  Password: 123
+						# Jul 18 13:07:36 (none) local0.warn cgminer[998]: Pool: 1  URL: stratum+tcp://zec.ss.poolin.com:1883  User: stoffel.S2101b  Password: 123
+						# Jul 18 13:07:36 (none) local0.warn cgminer[998]: Pool: 2  URL: stratum+tcp://zec.ss.poolin.com:25  User: stoffel.S2101b  Password: 123
+						# Jul 18 13:07:36 (none) local0.err cgminer[998]: No servers could be used! Exiting.
+						message_header='Unable to connect to the pool. Click for details'
+						message_tip="$( grep -iE 'pool|url|server' /var/log/messages | tail )"
+					;;
+
+				esac
+
+			;;
+
+			'/www/logs/lighttpd.error.log')
+
+				case "$log_message" in
+
+					*'auth failed'*)
+						event_type='warning'
+						# '(http_auth.c.1148) digest: auth failed for  root : wrong password, IP: 127.0.0.1 '
+						message_header='Failed login attempt has been made to the ASIC web interface. Click for details'
+						message_tip="Someone or something has tried to login to the ASIC web interface with a wrong login and/or password. "
+						message_tip+="If it wasn't you -- you MAY have a virus in the local network that trying to brute-force all ASICs "
+						message_tip+="in the vicinity. Please be advised."
+					;;
+
+				esac
+
+			;;
+
+			'/nvdata/miner_status.log')
+
+				case "$log_message" in
+
+					'ERROR_POWER_LOST'*)
+						event_type='error'
+						# 'ERROR_POWER_LOST: power set failed!'
+						message_header='Power lost. Click for details'
+						message_tip="It could be a problem with the miner PSU or the power transmission from the PSU to the hashboards. "
+						message_tip+="Please do examine closely the every power cable and its connectors and sockets. Clean them out."
+						message_tip+='\n'
+						message_tip+="If that doesn't help, please get the ASIC to the service or repair shop."
+					;;
+
+					'ERROR_PIC_LOST'*)
+						event_type='error'
+						# 'ERROR_PIC_LOST: PIC init failed'
+						message_header='PIC init failed. Click for details'
+						message_tip="PIC is a smart voltage regulator. On each hashboard there's the only one PIC."
+						message_tip+='\n'
+						message_tip+="The easiest case could be a bad connection between the chain and the control board. "
+						message_tip+="Please do examine closely the every ribbon cable, connector and socket. Clean them out. "
+						message_tip+="Examine the hashboard."
+						message_tip+='\n'
+						message_tip+="If that doesn't help, please get the ASIC to the service or repair shop."
+					;;
+
+					'ERROR_SOC_INIT'*)
+						event_type='error'
+						# 'ERROR_SOC_INIT: soc init failed!'
+						message_header='SOC init failed. Click for details'
+						message_tip="It could be a bad connection between the chain and the control board. "
+						message_tip+="Please do examine closely the every ribbon cable, connector and socket. Clean them out."
+						message_tip+='\n'
+						message_tip+="If that doesn't help, please get the ASIC to the service or repair shop."
+					;;
+
+					'WARN_NET_LOST'*)
+						event_type='warning'
+						# 'WARN_NET_LOST: network connection lost'
+						message_header='Network lost for a few seconds. Click for details'
+						message_tip="The miner have lost a network connection for more than a minute. The cause could be:
+									1) Faulty RJ-45 socket, RJ-45 connector or Ethernet cable -> check connectors & cabling;
+									2) Hanging router -> reboot router;
+									3) Your ISP -> contact your service provider;
+									4) A random Internet glitch."
+					;;
+
+					'ERROR_NET_LOST'*)
+						event_type='error'
+						# 'ERROR_NET_LOST: network connection lost'
+						message_header='Network lost for a few minutes. Click for details'
+						message_tip="The miner have lost a network connection for more than a minute. The cause could be:
+									1) Faulty RJ-45 socket, RJ-45 connector or Ethernet cable -> check connectors & cabling;
+									2) Hanging router -> reboot router;
+									3) Your ISP -> contact your service provider."
+					;;
+
+					'STATUS_'*		)	event_type='skip'		;;
+					'ERROR_'*		)	event_type='error'		;;
+					'WARN_'*		)	event_type='warning'	;;
+					*				)	event_type='warning'	;;
+
+				esac
+
+			;;
+
+			'/config/watchdog.log')
+
+				case "$log_message" in
+
+					'Tune is in progress'*)
+						# S9, 'Tune is in progress, wait 30 seconds...'
+						event_type='skip'
+					;;
+
+					'Found'*'red chips'*)
+						# S9: 'Found 1 red chips, restart'
+						event_type='info'
+						message_header='Auto-tune found a low hashrate chip, fixing'
+					;;
+
+					'Chain '*'found '*'domains')
+						# ST17: 'Chain 1: found 1 bad domains'
+						event_type='info'
+						message_header='Auto-tune found a low hashrate domain, fixing'
+					;;
+
+					*'domains fixed'*)
+						# ST17: 'Red domains fixed, restart'
+						event_type='ok'
+						message_header='Auto-tune fixed a low hashrate domain, miner restarted'
+					;;
+
+					'Activating profile '*)
+						# ST17, 'Activating profile 11'
+						event_type='skip'
+					;;
+
+					'Re-run cgminer to check temerature sensor type again!')
+						# ST17
+						event_type='skip'
+					;;
+
+					'Possible manufacturing defects detected'*)
+						# ST17 Hiveon 2.00
+						# 'Possible manufacturing defects detected - enable safe mode to save chips and boards from overheating'
+						if [[ -s /config/stop-mining ]]; then
+							failed_chain="$( < /config/stop-mining )"
+							[[ "$failed_chain" =~ $valid_chain_number_RE ]] && failed_chain="#$(( failed_chain - 1 )) " # chain numbers in the file are 1-based
+						fi
+						event_type='error'
+						message_header="Chain ${failed_chain}malfunction. Safe mode activated, mining disabled. Click for details"
+						message_tip='You see, hashboards are placed upright. Heatsinks soldered to chips using a Low Melting Point solder paste. '
+						message_tip+='Sometimes the solder melts a bit and then heatsink begins to slide down due to the gravitation. It slides '
+						message_tip+='right to the next heatsink down south and then KA-BOOM! -- a short-circuit that will ruin a whole hashboard. '
+						message_tip+='Be adviced to send the ASIC to the service.<hr>Despite the risk, you might consider to resume mining: '
+						message_tip+='just send a command <code>miner start</code>'
+					;;
+
+					*)
+						event_type='warning'
+					;;
+
+				esac
+				# cut milliseconds from watchdog messages like
+				# ST17: 'Total rate is 0 after 1870.000000 seconds, restart'
+				# S9: 'Total hashrate 0.000000 is less than 90 percents of 17112.42, stopping miner'
+				log_message="${log_message//\.000000 / }"
+
+			;;
+
+			'/tmp/auto-tune')														# S9
+
+				case "$log_message" in
+
+					'Config parse:'*)
+						# 'Config parse: freq_from=500, freq_to=756, voltage_from=830, voltage_to=890, ideal_percent=97'
+						event_type='ok'
+						message_header='Auto-tune is started. Click for details'
+						message_tip='Auto-tune is started. It will take 30-300 minutes. '
+						message_tip+='Please DO NOT power off, restart or apply another overclocking profile until the auto-tune is over.'
+					;;
+
+#					'Auto tune is done'*)
+#						# 'Auto tune is done, exit'
+#						event_type='ok'
+#						message_header='Tune done'
+#					;;
+
+				esac
+
+			;;
+
+			'/tmp/tune_log.txt')
+
+				case "$log_message" in
+
+					'Tune started'*)
+						event_type='ok'
+						message_header='Auto-tune is started. Click for details'
+						message_tip='Auto-tune is started. It will take 30-90 minutes. '
+						message_tip+='Please DO NOT power off, restart or apply another overclocking profile until the auto-tune is over.'
+					;;
+
+#					'All is ok'*)
+#						# 'All is ok, tune is done'
+#						event_type='ok'
+#					;;
+
+					'Achieved '*)
+						# 'Achieved maximum number of restarts'
+						event_type='warning'
+						message_header='Auto-tune attempts are maxed out'
+					;;
+
+				esac
+
+			;;
+
+			'/tmp/fault.log')
+				event_type='warning'
+				message_header='Miner program fault. Click for details'
+				message_tip='There was a miner program fault (due to bugs in the code and/or ASIC hardware). '
+				message_tip+='The miner has been restarted automatically.'
+			;;
+
+			*)
+				# let's do not frighten the user with 'oh no, the error!'
+				event_type='warning'
+			;;
+
+		esac
+
+		if [[ "$event_type" != 'skip' ]]; then
+			print_controller_log_entry "LOG_${event_type^^}" "${log_name}: $log_message" "$log_timestamp"
+			if (( send_messages_enabled )); then
+				[[ -z "$message_header" ]] && message_header="$log_message"
+
+				# shellcheck disable=SC2059
+				printf "$message_body_template" \
+					"$log_name" \
+					"$log_timestamp ${TZ-GMT}" \
+					"${event_type^^}" \
+					"$log_message" \
+					"${message_tip//$'\t'/}" | message "$event_type" "$message_header" --payload --silent
+			fi
+		fi
+	done
+}
+
+function get_new_lines_from_log {																	(( script_debug )) && debugcho "$@"
+	#
+	# get_new_lines_from_log 'log_name' ['log_name'...]
+	#
+	# the function uses *global* hashtable for saving session data between calls
+	# WARNING: it does not work in any pipes and subshells like | () $() <()
+	#
+
+	# args
+
+	(( $# < 1 )) && { errcho 'invalid number of arguments'; return $(( exitcode_ERROR_IN_ARGUMENTS )); }
+	local -r -a logs_list=( "$@" )
+
+	# vars
+
+	local previous_lines_quantity current_lines_quantity this_log this_log_sanitized
+	local -i previous_log_size=0
+	local -i current_log_size=0
+	local -i tail_from_line=0
+	local -i how_much_new_lines=0
+	local -i is_something_found=$(( exitcode_OK_NOTHING_HAPPENED ))
+
+	# code
+
+	for this_log in "${logs_list[@]}"; do
+		current_lines_quantity=''
+
+		if [[ -s "$this_log" ]]; then
+			# file is exist and not empty
+			# don't waste resources to count lines on every iteration, check file size first
+			current_log_size="$( get_file_size_in_bytes "$this_log" )"
+
+			# is it first time run?
+			if ! previous_log_size="$( get_hash_value 'file_attribute' "$this_log" 'size' )"; then
+				# first run, init vars
+				current_lines_quantity="$( wc -l < "$this_log" )"
+				previous_log_size="$current_log_size"
+			fi
+
+			if (( current_log_size != previous_log_size )); then # log file was changed
+
+				if (( current_log_size > previous_log_size )); then # a few lines was added
+					previous_lines_quantity="$( get_hash_value 'file_attribute' "$this_log" 'lines' )" # get previous lines count
+				elif (( current_log_size < previous_log_size )); then # guess that file was truncated
+					previous_lines_quantity=0
+				fi
+
+				is_something_found=$(( exitcode_WARNING_SOMETHING_HAPPENED ))
+				current_lines_quantity="$( wc -l < "$this_log" )" # get current lines count
+
+				if (( previous_lines_quantity > current_lines_quantity )); then # a wild guess that the file was truncated
+					# !!! small debug
+					errcho "$this_log was truncated? size ${previous_log_size}b -> ${current_log_size}b, lines $previous_lines_quantity -> $current_lines_quantity, tail_from_line: $tail_from_line, how_much_new_lines: $how_much_new_lines"
+					previous_lines_quantity=0
+				fi
+
+				(( tail_from_line = previous_lines_quantity + 1 ))
+				(( how_much_new_lines = current_lines_quantity - previous_lines_quantity ))
+				printf -v this_log_sanitized '%q' "$this_log"
+
+				if (( current_log_size > previous_log_size )); then # a few lines was added
+					tail -n "+$tail_from_line" "$this_log" | head -n "$how_much_new_lines" ||
+						errcho "$this_log size ${previous_log_size}b -> ${current_log_size}b, lines $previous_lines_quantity -> $current_lines_quantity, tail_from_line: $tail_from_line, how_much_new_lines: $how_much_new_lines"
+				elif (( current_log_size < previous_log_size )); then # a wild guess that the file was truncated
+					# tail not cat -- better be safe than sorry
+					tail -n 100 "$this_log" ||
+						errcho "$this_log size ${previous_log_size}b -> ${current_log_size}b, lines $previous_lines_quantity -> $current_lines_quantity, tail_from_line: $tail_from_line, how_much_new_lines: $how_much_new_lines"
+				fi | {
+						sed 's|$|'"${unique_delimiter}${this_log_sanitized}"'|' --
+					}
+			fi
+
+			# save current values
+			set_hash_value 'file_attribute' "$this_log" 'size' "$current_log_size"
+			if [[ -n "$current_lines_quantity" ]]; then
+				set_hash_value 'file_attribute' "$this_log" 'lines' "$current_lines_quantity"
+			fi
+		else
+			# file not found or empty
+			set_hash_value 'file_attribute' "$this_log" 'size' 0
+		fi
+	done
+
+	return $(( is_something_found ))
+}
+
+function print_last_lines_from_own_log {															(( script_debug )) && debugcho "$@"
+	#
+	# print_last_lines_from_own_log [all]
+	#
+
+	# args
+
+	(( $# > 1 )) && { errcho 'invalid number of arguments'; return $(( exitcode_ERROR_IN_ARGUMENTS )); }
+	local -r filter="${1-}"
+
+	# consts
+
+	local -r filter_RE='(error|warning|Shrink log|Truncate log|selfupgrade|updated from|New date)'
+	#                                 | patterns from the legacy versions
+
+	# code
+
+	if [[ -s "$controller_log_file" ]]; then
+		case "$filter" in
+			'all')
+				tail -n "$log_lines_to_tail" "$controller_log_file"
+				;;
+			''|*)
+				grep -Ev -e '^[[:space:]]' -- "$controller_log_file" | grep -Fv -e '> Sending ' -- | grep -Ei -e "$filter_RE" --
+				;;
+		esac
+	else
+		echo "$controller_log_file not found or empty"
+	fi
+}
+
+function print_controller_log_entry {																(( script_debug )) && debugcho "$@"
+	#
+	# print_controller_log_entry 'event_type' 'log_message' ['timestamp_in_plaintext']
+	#
+
+	# args
+
+	(( $# < 2 && $# > 3 )) && { errcho 'invalid number of arguments'; return $(( exitcode_ERROR_IN_ARGUMENTS )); }
+	local event_type="${1-<undefined>}"
+	local log_message="${2-<undefined>}"
+	local timestamp_in_plaintext="${3-}"
+
+	# code
+
+	event_type="[${event_type^^}]"
+
+	if [[ -z "$timestamp_in_plaintext" ]]; then
+		printf '%(%F %T)T %-13.13s %b\n' -1 "$event_type" "$log_message"
+	else
+		printf  '%-19.19s %-13.13s %b\n' "$timestamp_in_plaintext" "$event_type" "$log_message"
+	fi
+
+	return $(( exitcode_OK ))
+}
+
+function shrink_system_logs {																		(( script_debug )) && debugcho
+
+	# templates
+
+	local -r event_type_for_log='warning'		# error|warning|info
+	local -r event_type_for_message=''			# error|warning|info|success
+
+	# consts
+
+	local -r -i log_lines_shrink_limit=1000
+	local -r -a logs_collection=( /var/log/* /tmp/*.log /hive-config/*.log /config/*.log /www/logs/*.log )
+
+	# vars
+
+	local this_log
+	local -i current_number_of_lines_in_log
+
+	# code
+
+	for this_log in "${logs_collection[@]}"; do
+		if [[ -s "$this_log" ]]; then
+			current_number_of_lines_in_log="$( wc -l < "$this_log" )"
+			if (( current_number_of_lines_in_log > log_lines_shrink_limit )); then
+				print_controller_log_entry "$event_type_for_log" "Shrink log $this_log, $current_number_of_lines_in_log lines to $log_lines_shrink_limit lines"
+				# shellcheck disable=SC2005,SC2094
+				echo "$( tail -n "$log_lines_shrink_limit" "$this_log" )" > "$this_log" # !!! there could be a race condition someday
+			fi
+		fi
+	done
+}
+
+
+#
+# auxillary
+#
+
+function drop_caches {																				(( script_debug )) && debugcho
+	#
+	# warning: frequent use of this function may increase NAND wear and tear
+	#
+
+	# code
+	sync && echo 3 > /proc/sys/vm/drop_caches
+}
+
+function wipe_memory {																				(( script_debug )) && debugcho
+
+	# templates
+
+	local -r event_type_for_log='warning'		# error|warning|info
+	local -r event_type_for_message=''			# error|warning|info|success
+
+	# vars
+
+	local -a files_greater_than_1M
+	local -i this_file_size
+	local this_file
+
+	# code
+
+	files_greater_than_1M=( $( LANG=C du -h /tmp/* /var/log/* | awk '/^[0-9\.]+[MG]/{ print $2 }' ) )
+
+	for this_file in "${files_greater_than_1M[@]}"; do
+		this_file_size="$( get_file_size_in_bytes "$this_file" )"
+		print_controller_log_entry "$event_type_for_log" "Remove large file $this_file ($this_file_size bytes >= 1Mb)"
+		rm "$this_file"
+	done
+
+	drop_caches
+}
+
+function check_ntpd {																				(( script_debug )) && debugcho
+
+	# code
+
+	# shellcheck disable=SC2009
+	# ...bc there's no pgrep
+	if ! ps | grep -q '[n]tpd'; then
+		if [[ -x /etc/init.d/ntpd ]]; then
+			print_controller_log_entry 'warning' 'ntpd daemon not running, starting it...'
+			/etc/init.d/ntpd start
+		else
+			print_controller_log_entry 'warning' '/etc/init.d/ntpd not found, trying to adjust the time by ntpdate...'
+			sync_time_with_ntpdate
+		fi
+		echo
+	fi
+}
+
+function sync_time_with_ntpdate {																	(( script_debug )) && debugcho
+
+	# code
+
+	if which ntpdate; then
+		ntpdate -u -t 10 "$ntp_server"
+	else
+		# TODO use timedatectl (inno)
+		print_controller_log_entry 'warning' 'ntpdate not found'
+	fi
+}
+
+function set_time_source { # not used atm
+
+	# vars
+
+	local -i time_before time_after time_difference
+
+	# code
+
+	time_before="$( get_current_system_time_in_seconds )"
+
+	# shellcheck disable=SC2009
+	# ...bc there's no pgrep
+	if is_program_in_the_PATH 'ntpdate' && ntpdate -u -t 10 "$ntp_server"; then
+		time_source='ntpdate'
+
+	elif ps | grep -q '[n]tpd'; then
+		time_source='ntpd'
+
+	else
+		time_source='hive'
+
+	fi
+
+	print_controller_log_entry 'info' "The correct time source set to '$time_source'"
+
+	time_after="$( get_current_system_time_in_seconds )"
+	(( time_difference = time_after >= time_before ? time_after - time_before : time_before - time_after )) # absolute difference
+
+	if (( time_difference > (60 * 10) )); then
+		print_controller_log_entry 'warning' "Local time adjusted by $( seconds2dhms "$time_difference" )"
+	fi
+}
+
+function sync_time_via_hive_server { # not used atm
+
+	# vars
+
+	local HIVE_HOST_URL server_answer
+	local -i date_from_server_in_seconds
+	local -i is_something_happened=$(( exitcode_OK_NOTHING_HAPPENED ))
+
+	# code
+
+	HIVE_HOST_URL="$( [[ -s /hive-config/rig.conf ]] && source /hive-config/rig.conf && echo "${HIVE_HOST_URL-}" )"
+
+	if [[ -z ${HIVE_HOST_URL-} ]]; then
+		HIVE_HOST_URL='http://api.hiveos.farm'
+	fi
+	if server_answer="$( curl --silent --head "$HIVE_HOST_URL" 2>&1 )"; then
+		date_from_server_in_seconds="$( grep -F 'Date:' <<< "$server_answer" | cut -d' ' -f3-6 | timetran )"
+		echo "Setting actual date from Hive server: $( date -s "@$date_from_server_in_seconds" )"
+	else
+		echo "Network is lost? Cannot get actual date from Hive server ($server_answer)"
+		is_something_happened=$(( exitcode_WARNING_SOMETHING_HAPPENED ))
+	fi
+
+	return $(( is_something_happened ))
+}
+
+
+#
+# routine functions executed by cron
+#
+# checkup:is_it_the_past
+# checkup:is_memory_full
+# checkup:is_miner_config_in_sync_with_FS
+# checkup:is_hiveon_config_in_sync
+# checkup:is_build_updated
+# checkup:is_virus_found
+# checkup:is_NAND_in_RO_mode
+# checkup:is_overclock_profile_exist
+# checkup:are_logs_updated
+# execute:cache_hive_ip
+# execute:agent_screen_dontattach
+# print_checkup_summary_report
+#
+
+function checkup:is_it_the_past {																	(( script_debug )) && debugcho
+
+	# templates
+
+	local -r event_type_for_log='warning'		# error|warning|info
+	local -r event_type_for_message=''			# error|warning|info|success
+
+	# vars
+
+	local HIVE_HOST_URL server_answer
+	local -i current_year date_from_server_in_seconds
+	local -i is_something_happened=$(( exitcode_OK_NOTHING_HAPPENED ))
+
+	# code
+
+	printf -v current_year '%(%Y)T' -1
+
+	if (( current_year < 2020 )); then
+		is_something_happened=$(( exitcode_WARNING_SOMETHING_HAPPENED ))
+
+		HIVE_HOST_URL="$( [[ -s /hive-config/rig.conf ]] && source /hive-config/rig.conf && echo "${HIVE_HOST_URL-}" )"
+
+		if [[ -z ${HIVE_HOST_URL-} ]]; then
+			HIVE_HOST_URL='http://api.hiveos.farm'
+		fi
+		if server_answer="$( curl --silent --head "$HIVE_HOST_URL" 2>&1 )"; then
+			date_from_server_in_seconds="$( grep -F 'Date:' <<< "$server_answer" | cut -d' ' -f3-6 | timetran )"
+			print_controller_log_entry "$event_type_for_log" "System date year is $current_year. Getting actual date from server: $( date -s "@$date_from_server_in_seconds" )"
+		else
+			print_controller_log_entry "$event_type_for_log" "System date year is $current_year. Network is lost, cannot get actual date from server ($server_answer)"
+		fi
+	fi
+
+	return $(( is_something_happened ))
+}
+
+function checkup:is_memory_full {																	(( script_debug )) && debugcho
+
+	# templates
+
+	local -r event_type_for_log='warning'		# error|warning|info
+	local -r event_type_for_message='warning'	# error|warning|info|success
+
+	# consts
+
+	local -r -i low_memory_limit=5000 # 5 Mb
+	local -r -i top_lines_count=10
+
+	# vars
+
+	local -i is_something_happened=$(( exitcode_OK_NOTHING_HAPPENED ))
+	local free_memory print_top a
+
+	# code
+
+	free_memory="$( grep -Fi 'memfree' /proc/meminfo | sed 's/[^0-9]//g' )"
+
+	if (( free_memory < low_memory_limit )); then
+		is_something_happened=$(( exitcode_WARNING_SOMETHING_HAPPENED ))
+		print_controller_log_entry "$event_type_for_log" "Memory low: $free_memory Mb"
+		print_top="$( top -b -n1 | head -n "$top_lines_count" )"
+		echo -e "$print_top" | tee >( message "$event_type_for_message" 'System memory low, tried to clean up the logs' --payload --silent )
+
+		shrink_system_logs
+		wipe_memory
+	fi
+
+	return $(( is_something_happened ))
+}
+
+function checkup:is_miner_config_in_sync_with_FS {													(( script_debug )) && debugcho
+
+	# templates
+
+	local -r event_type_for_log='warning'		# error|warning|info
+	local -r event_type_for_message='warning'	# error|warning|info|success
+
+	# consts
+
+	local -r initial_crontab_entry="*/5 * * * *	$FUNCNAME"
+	local -r further_crontab_entry="@hourly		$FUNCNAME"
+
+	# vars
+
+	local -i this_crontab_element
+	local -i is_something_happened=$(( exitcode_OK_NOTHING_HAPPENED ))
+
+	# code
+
+	if ! asicminer-config --compare --quiet; then
+		snore 2 # an average asicminer-config timing on S17 is 0.5s
+		if ! asicminer-config --compare --quiet; then
+			is_something_happened=$(( exitcode_WARNING_SOMETHING_HAPPENED ))
+			print_controller_log_entry "$event_type_for_log" 'Miner config does not match the Flight Sheet config'
+			asicminer-config --compare --verbose | message "$event_type_for_message" 'Miner config does not match the Flight Sheet. Click for details' --payload --silent
+
+			# adjust crontab, get this checkup to run once in a hour
+			for this_crontab_element in "${!crontab[@]}"; do
+				case "${crontab[this_crontab_element]}" in
+					"$initial_crontab_entry")	crontab[this_crontab_element]="$further_crontab_entry"
+												print_controller_log_entry 'info' "Adjusting crontab for '$FUNCNAME' to run once in an hour"
+												break											;;
+					"$further_crontab_entry")	break											;;
+				esac
+			done
+		fi
+	fi
+
+	return $(( is_something_happened ))
+}
+
+function checkup:is_hiveon_config_in_sync {															(( script_debug )) && debugcho
+
+	# templates
+
+	local -r event_type_for_log='info'			# error|warning|info
+
+	# consts
+
+	local -r HIVEON_CONF='/hive-config/hiveon.conf'
+	local -r ASIC_CONF='/config/config.conf'
+
+	# vars
+
+	local -i is_something_happened=$(( exitcode_OK_NOTHING_HAPPENED ))
+
+	# code
+
+	if [[ -f "$HIVEON_CONF" ]] && ! cmp -s "$HIVEON_CONF" "$ASIC_CONF"; then
+		snore 1
+		if ! cmp -s "$HIVEON_CONF" "$ASIC_CONF"; then
+			is_something_happened=$(( exitcode_WARNING_SOMETHING_HAPPENED ))
+			print_controller_log_entry "$event_type_for_log" "$ASIC_CONF changed, sending it to the back-end..."
+			cp -f "$ASIC_CONF" "$HIVEON_CONF"
+			ant-functions send_hiveon_config
+		fi
+	fi
+
+	return $(( is_something_happened ))
+}
+
+function checkup:is_build_updated {																	(( script_debug )) && debugcho
+
+	# templates
+
+	local -r event_type_for_log='warning'		# error|warning|info
+	local -r event_type_for_message='success'	# error|warning|info|success
+
+	# consts
+
+	local -r actual_VERSION_file='/hive/etc/VERSION'
+	local -r saved_VERSION_file='/hive-config/VERSION'
+	local -r actual_build_file='/hive/etc/build'
+	local -r saved_build_file='/hive-config/build'
+
+	# vars
+
+	local actual_VERSION=''			saved_VERSION=''
+	local actual_build=''			saved_build=''
+	local actual_Client_version=''	saved_Client_version=''
+	local message_header
+	local -i is_something_happened=$(( exitcode_OK_NOTHING_HAPPENED ))
+	local -i is_saved_build_file_exist=0 is_actual_build_file_exist=0 should_report_to_user=0
+
+	# code
+
+	if [[ -f "$actual_VERSION_file" ]]; then
+
+		actual_VERSION="$( < "$actual_VERSION_file" )"
+		if [[ -f "$saved_VERSION_file" ]]; then
+			saved_VERSION="$( < "$saved_VERSION_file" )"
+		else
+			saved_VERSION="0.0-00"
+		fi
+
+		# 1. checking and comparing the builds
+
+		if [[ -f "$actual_build_file" ]]; then
+			actual_build="-$( < "$actual_build_file" )" # note '-'
+			is_actual_build_file_exist=1
+		fi
+
+		if [[ -f "$saved_build_file" ]]; then
+			saved_build="-$( < "$saved_build_file" )" # note '-'
+			is_saved_build_file_exist=1
+		fi
+
+		if (( is_saved_build_file_exist && ! is_actual_build_file_exist )); then
+			# only saved exists			-> build degraded to release	-> report to user, remove saved to reflect the changes
+			should_report_to_user=1
+			rm -f "$saved_build_file"
+		elif (( ! is_saved_build_file_exist && is_actual_build_file_exist )); then
+			# only actual exists		-> release updated to build		-> report to user, save actual to saved_
+			should_report_to_user=1
+			cp -f "$actual_build_file" "$saved_build_file"
+		elif (( ! is_saved_build_file_exist && ! is_actual_build_file_exist )); then
+			# both not exist			-> nothing happened				-> nothing to do
+			:
+		elif (( is_saved_build_file_exist && is_actual_build_file_exist )); then
+			if ! cmp -s "$actual_build_file" "$saved_build_file"; then
+				# both exist and not equal		-> build updated		-> report to user, save actual to saved
+				should_report_to_user=1
+				cp -f "$actual_build_file" "$saved_build_file"
+			else
+				# both exist and equal	-> nothing happened				-> nothing to do
+				:
+			fi
+		fi
+
+		# 2. and now the VERSIONs
+
+		if [[ ! -f "$saved_VERSION_file" ]]; then
+			# saved_ not found, let's begin to store it
+			cp -f "$actual_VERSION_file" "$saved_VERSION_file"
+		else
+			# compare VERSIONs
+			if ! cmp -s "$actual_VERSION_file" "$saved_VERSION_file"; then
+				# VERSIONs differ
+				should_report_to_user=1
+				cp -f "$actual_VERSION_file" "$saved_VERSION_file"
+			else
+				# VERSIONs are the same
+				:
+			fi
+		fi
+
+		# final step
+
+		if (( should_report_to_user )); then
+
+			actual_Client_version="${actual_VERSION}${actual_build}"
+			saved_Client_version="${saved_VERSION}${saved_build}"
+
+			# shellcheck disable=SC2154
+			case "$( is_first_version_equal_to_second "$actual_Client_version" "$saved_Client_version"; echo $? )" in
+				$(( exitcode_GREATER_THAN ))	)	what_happened='updated' 	;;
+				$(( exitcode_LESS_THAN ))		)	what_happened='degraded'	;;
+				*								)	what_happened='changed' 	;; # wtf? maybe is_first_version_equal_to_second() error
+			esac
+
+			message_header="Client $what_happened from $saved_Client_version to $actual_Client_version"
+			print_controller_log_entry "$event_type_for_log" "$message_header"
+			message "$event_type_for_message" "$message_header" --silent
+
+			is_something_happened=$(( exitcode_WARNING_SOMETHING_HAPPENED ))
+		fi
+	else
+		if (( $( get_checkup_counter "$FUNCNAME" 'actual_VERSION_file_missed' ) == 0 )); then
+			# one time action
+			message_header="$actual_VERSION_file missed, please check"
+			print_controller_log_entry 'warning' "$message_header"
+			# shellcheck disable=SC2012
+			ls -ALl /hive/etc /hive-config | message 'warning' "$message_header" --payload --silent
+			set_checkup_counter "$FUNCNAME" 'actual_VERSION_file_missed' 1
+		fi
+		is_something_happened=$(( exitcode_WARNING_SOMETHING_HAPPENED ))
+	fi
+
+	return $(( is_something_happened ))
+}
+
+function checkup:is_virus_found {																	(( script_debug )) && debugcho
+
+	# templates
+
+	local -r event_type_for_log_DANGER='error'			# error|warning|info
+	local -r event_type_for_message_DANGER='error'		# error|warning|info|success
+
+	local -r event_type_for_log_WARNING='warning'		# error|warning|info
+	local -r event_type_for_message_WARNING='warning'	# error|warning|info|success
+
+	# consts
+
+	local -r message_header_WARNING='Vulnerability report. Click for details'
+	local -r message_header_DANGER='Virus signature found. Click for details'
+
+	local -r tag_label_WARNING='vulnerability found'
+	local -r tag_label_DANGER='virus found'
+
+	# vars
+
+	local -i is_something_happened=$(( exitcode_OK_NOTHING_HAPPENED ))
+	local -i is_virus_found=0
+	local virus_report message_header tag_label event_type_for_log event_type_for_message
+
+	# code
+
+	if is_program_in_the_PATH 'virus-check'; then
+		if (( $( get_checkup_counter "$FUNCNAME" 'program_not_found' ) > 0 )); then
+			# one time action
+			print_controller_log_entry 'info' "'virus-check' program found again"
+			set_checkup_counter "$FUNCNAME" 'program_not_found' 0
+		fi
+	else
+		if (( $( get_checkup_counter "$FUNCNAME" 'program_not_found' ) == 0 )); then
+			# one time action
+			print_controller_log_entry 'error' "'virus-check' program not found"
+			set_checkup_counter "$FUNCNAME" 'program_not_found' 1
+		fi
+		return $(( exitcode_ERROR_NOT_FOUND ))
+	fi
+
+	if is_script_exist_and_doing_fine 'virus-check'; then
+		if (( $( get_checkup_counter "$FUNCNAME" 'program_goes_bananas' ) > 0 )); then
+			# one time action
+			print_controller_log_entry 'info' "'virus-check' program back from bananaland"
+			set_checkup_counter "$FUNCNAME" 'program_goes_bananas' 0
+		fi
+	else
+		if (( $( get_checkup_counter "$FUNCNAME" 'program_goes_bananas' ) == 0 )); then
+			# one time action
+			print_controller_log_entry 'error' "'virus-check' program goes bananas"
+			set_checkup_counter "$FUNCNAME" 'program_goes_bananas' 1
+		fi
+		return $(( exitcode_ERROR_NOT_FOUND ))
+	fi
+
+	virus_report="$( virus-check )"
+	is_virus_found=$?
+
+	if (( is_virus_found )); then
+		case $(( is_virus_found )) in
+			1) # warning
+				event_type_for_message="$event_type_for_message_WARNING"
+				event_type_for_log="$event_type_for_log_WARNING"
+				message_header="$message_header_WARNING"
+				tag_label="$tag_label_WARNING"
+				;;
+			2|3) # danger | warning+danger
+				event_type_for_message="$event_type_for_message_DANGER"
+				event_type_for_log="$event_type_for_log_DANGER"
+				message_header="$message_header_DANGER"
+				tag_label="$tag_label_DANGER"
+				;;
+		esac
+		if (( $( get_checkup_counter "$FUNCNAME" 'message_sent' ) == 0 )); then
+			# !!! flaw: if another virus will arise, no message will be sent till reboot
+			# one time action
+			print_controller_log_entry "$event_type_for_log" "$message_header"
+			echo -e "$virus_report" | tee >( message "$event_type_for_message" "$message_header" --payload --silent )
+			if (( assign_tag_to_worker )); then
+				message tag "$tag_label" --silent
+			fi
+			set_checkup_counter "$FUNCNAME" 'message_sent' 1
+		fi
+		is_something_happened=$(( exitcode_WARNING_SOMETHING_HAPPENED ))
+	fi
+
+	return $(( is_something_happened ))
+}
+
+function checkup:is_NAND_in_RO_mode {																(( script_debug )) && debugcho
+
+	# templates
+
+	local -r event_type_for_log='error'			# error|warning|info
+	local -r event_type_for_message='error'		# error|warning|info|success
+
+	# consts
+
+	local -r -a directories_on_NAND=( '/nvdata' '/config' )
+
+	# vars
+
+	local directory_to_check message_header temp_file
+	local -i is_something_happened=$(( exitcode_OK_NOTHING_HAPPENED ))
+	local -i write_failed_FLAG=0
+
+	# code
+
+	if ! is_checkup_counter_set "$FUNCNAME" 'message_sent'; then
+		# one time action
+		for directory_to_check in "${directories_on_NAND[@]}"; do
+			if [[ -d "$directory_to_check" ]]; then
+				# 1st check
+				if [[ ! -w "$directory_to_check" ]]; then
+					write_failed_FLAG=1
+				else
+					# 2nd check, just for sure
+					if ! temp_file="$( mktemp -p "$directory_to_check" 2> /dev/null )"; then
+						write_failed_FLAG=1
+					else
+						rm -rf "$temp_file"
+					fi
+				fi
+				if (( write_failed_FLAG )); then
+					message_header="Cannot write to $directory_to_check. NAND is in the read-only state, the ASIC may need a service"
+					print_controller_log_entry "$event_type_for_log" "$message_header"
+					message "$event_type_for_message" "$message_header" --silent
+					set_checkup_counter "$FUNCNAME" 'message_sent' 1
+					is_something_happened=$(( exitcode_WARNING_SOMETHING_HAPPENED ))
+				fi
+			fi
+		done
+	else
+		is_something_happened=$(( exitcode_WARNING_SOMETHING_HAPPENED ))
+	fi
+
+	return $(( is_something_happened ))
+}
+
+function checkup:is_overclock_profile_exist {														(( script_debug )) && debugcho
+
+	# templates
+
+	local -r event_type_for_log='warning'		# error|warning|info
+	local -r event_type_for_message='warning'	# error|warning|info|success
+	local -r message_header='For maximum power efficiency you only have to apply an Overclocking profile'
+
+	# consts
+
+	local -r oc_profile_file='/config/profile.txt'
+	local -r asic_model_RE='Antminer.+17.+Hiveon'
+
+	# vars
+
+	local -i is_something_happened=$(( exitcode_OK_NOTHING_HAPPENED ))
+
+	# code
+
+	if [[ $ASIC_MODEL =~ $asic_model_RE ]]; then
+		if [[ ! -s "$oc_profile_file" ]]; then
+			if (( $( get_checkup_counter "$FUNCNAME" 'oc_profile_not_found' ) == 0 )); then
+				# one time action
+				print_controller_log_entry "$event_type_for_log" 'OC profile not found or empty'
+				message "$event_type_for_message" "$message_header" --silent
+				set_checkup_counter "$FUNCNAME" 'oc_profile_not_found' 1
+				is_something_happened=$(( exitcode_WARNING_SOMETHING_HAPPENED ))
+			fi
+		else
+			if (( $( get_checkup_counter "$FUNCNAME" 'oc_profile_not_found' ) > 0 )); then
+				# one time action
+				print_controller_log_entry 'info' 'OC profile returns back'
+				set_checkup_counter "$FUNCNAME" 'oc_profile_not_found' 0
+			fi
+		fi
+	fi
+
+	return $(( is_something_happened ))
+}
+
+function checkup:is_fw_signed {																		(( script_debug )) && debugcho
+
+	# templates
+
+	local -r event_type_for_log='warning'		# error|warning|info
+	local -r event_type_for_message='warning'	# error|warning|info|success
+	local -r message_header='For maximum security you only have to install a signed firmware'
+
+	# vars
+
+	local -i is_something_happened=$(( exitcode_OK_NOTHING_HAPPENED ))
+
+	# code
+
+	if ! ant-functions is_hiveon_fw_signed; then
+		if (( $( get_checkup_counter "$FUNCNAME" 'fw_is_unsigned' ) == 0 )); then
+			# one time action
+			print_controller_log_entry "$event_type_for_log" 'Firmware is unsigned'
+			message "$event_type_for_message" "$message_header" --silent
+			set_checkup_counter "$FUNCNAME" 'fw_is_unsigned' 1
+			is_something_happened=$(( exitcode_WARNING_SOMETHING_HAPPENED ))
+		fi
+	else
+		if (( $( get_checkup_counter "$FUNCNAME" 'fw_is_unsigned' ) > 0 )); then
+			# one time action
+			print_controller_log_entry 'info' 'Firmware is signed now'
+			set_checkup_counter "$FUNCNAME" 'fw_is_unsigned' 0
+		fi
+	fi
+
+	return $(( is_something_happened ))
+}
+
+function checkup:are_logs_updated {																	(( script_debug )) && debugcho
+
+	# consts
+
+	local -r -a logs_to_check=(
+		'/config/watchdog.log'			# Hiveon 9/15/17
+		'/nvdata/miner_status.log'		# Hiveon 15/17
+		'/tmp/auto-tune'				# Hiveon 9
+		'/tmp/fault.log'				# Hiveon 15/17
+		'/tmp/tune_log.txt'				# Hiveon 15/17
+		'/var/log/log'					# Hiveon 15/17
+		'/var/log/messages'				# all Antminers ???
+		'/www/logs/lighttpd.error.log'	# all Antminers ???
+	)
+
+	# vars
+
+	local -i is_something_happened=$(( exitcode_OK_NOTHING_HAPPENED ))
+
+	# code
+
+	get_new_lines_from_log "${logs_to_check[@]}" > >( filter_lines_send_messages )
+
+	# ??? could that be the exitcode will come from the last command in chain? I think not, there's a simple redirection
+	if (( $? != 0 )); then
+		is_something_happened=$(( exitcode_WARNING_SOMETHING_HAPPENED ))
+	fi
+
+	return $(( is_something_happened ))
+}
+
+function execute:cache_hive_ip {																	(( script_debug )) && debugcho
+
+	# vars
+
+	local -i is_something_happened=$(( exitcode_OK_NOTHING_HAPPENED ))
+
+	# code
+
+	/hive/bin/cache-hive-ip > /dev/null || is_something_happened=$(( exitcode_WARNING_SOMETHING_HAPPENED ))
+
+	return $(( is_something_happened ))
+}
+
+function execute:agent_screen_dontattach {															(( script_debug )) && debugcho
+
+	# vars
+
+	local -i is_something_happened=$(( exitcode_OK_NOTHING_HAPPENED ))
+
+	# code
+
+	/hive/bin/agent-screen dontattach || is_something_happened=$(( exitcode_WARNING_SOMETHING_HAPPENED ))
+
+	return $(( is_something_happened ))
+}
+
+
+function print_checkup_summary_report {																(( script_debug )) && debugcho
+
+	# templates
+
+	local -r event_type_for_log='info'			# error|warning|info
+	local -r event_type_for_message=''			# error|warning|info|success
+
+	# vars
+
+	local -a checkups_list=()
+	local this_checkup
+	local -i alarm_counter idle_counter total_counter
+	local -i number_of_alarmed_checkups=0 total_number_of_checkups=0
+
+	# code
+
+	readarray -t checkups_list < <( list_checkup_counters ) # you know, <<< $() operator is slower than < <()
+
+	# get number_of_alarmed_checkups
+	for this_checkup in "${checkups_list[@]}"; do
+		alarm_counter="$( get_checkup_counter "$this_checkup" 'alarm' )"
+		if (( alarm_counter != 0 )); then
+			(( number_of_alarmed_checkups++ ))
+		fi
+	done
+
+	total_number_of_checkups="${#checkups_list[@]}"
+
+	if (( number_of_alarmed_checkups == 0 )); then
+		print_controller_log_entry "$event_type_for_log" 'Controller daily report: everything was OK over the past 24h'
+	else
+		print_controller_log_entry "$event_type_for_log" "Controller daily report, $number_of_alarmed_checkups/$total_number_of_checkups checkups involved:"
+
+		#printf '%33.33s %-35.35s %7.7s %7.7s\n' '' 'Checkup' 'Alarms' 'Total'
+		for this_checkup in "${checkups_list[@]}"; do
+			alarm_counter="$( get_checkup_counter "$this_checkup" 'alarm' )"
+			if (( alarm_counter != 0 )); then
+				idle_counter="$( get_checkup_counter "$this_checkup" 'idle' )"
+				(( total_counter = alarm_counter + idle_counter ))
+				printf '%33.33s %-35.35s %u/%u events\n' '' "$this_checkup" "$alarm_counter" "$total_counter"
+			fi
+			reset_checkup_counter "${this_checkup}" 'alarm'
+			reset_checkup_counter "${this_checkup}" 'idle'
+		done
+	fi
+
+	return $(( exitcode_OK )) # FIX: should not affect checkup_counters in any way
+}
+
+
+#
+# cron
+#
+# populate_array_with_actual_cron_jobs
+# wait_for_next_minute
+# do_cron_jobs_indefinitely
+#
+
+function populate_array_with_actual_cron_jobs {														(( script_debug )) && debugcho "$@"
+	#
+	# Usage: populate_array_with_actual_cron_jobs 'crontab_array_name' 'jobs_to_do_array'
+	#
+	# Get crontab array, put command(s) to run atm to jobs_to_do_array
+	#
+	# crontab array example:
+	#
+	#		 +------------- minute (0 - 59)
+	#		 | +------------- hour (0 - 23)
+	#		 | | +------------- day of the month (1 - 31)
+	#		 | | | +------------- month (1 - 12)
+	#		 | | | | +------------- day of week (1..7); 1 is Monday
+	#		 | | | | |
+	#		 * * * * *		command to execute
+	#
+	#	crontab=(
+	#		'* * * * *		every-minute-job'
+	#		'*/2 * * * *	every-2-minute-job'
+	#		'13 * * * *		13th-minute-of-every-hour-job'
+	#		'@hourly		hourly-job'
+	#		'* * * * */2	tuesday-thursday-saturday-job'
+	#	)
+	#
+	# cron fields should be delimited by space(s) or tab(s)
+	# supports @hourly, @daily, @midnight and @weekly specials
+	#
+
+	# args
+
+	(( $# != 2 )) && { errcho 'invalid number of arguments'; return $(( exitcode_ERROR_IN_ARGUMENTS )); }
+	local -r -n _crontab_array="${1-}" # by ref
+	local -r -n _jobs_to_do_array="${2-}" # by ref
+
+	# consts
+
+	local -r -i                           M=0       H=1       d=2       m=3       u=4       CMD=5			# field order
+	local -r -a cron_fields_dictionary=( [M]='%-M' [H]='%-H' [d]='%-d' [m]='%-m' [u]='%-u' [CMD]='CMD' )	# field strftime() format
+	local -r asterisk_RE='^[*]/[0-9]{1,2}$'
+	local -r number_RE='^[0-9]{1,2}$'
+	local -r valid_crontab_line_RE='^((([*]|[0-9]{1,2})(/[0-9]{1,2})?[[:space:]]+){5}|(@hourly|@daily|@midnight|@weekly)[[:space:]]+)[^[:space:]]+'
+	#                               ^(((   |          )(           )             )   |(       |      |         |       )            )
+
+	# vars
+
+	local -a crontab_line_splitted
+	local -i start_time line_iterator field_iterator this_field_time_value
+	local crontab_line_raw cmd_to_exec this_field
+
+	# code
+
+	start_time="$( get_current_system_time_in_seconds )"
+
+	_jobs_to_do_array=() # reset jobs_to_do
+
+	# for each crontab line
+	for (( line_iterator=0; line_iterator < ${#_crontab_array[@]}; line_iterator++ )); do
+		crontab_line_raw="${_crontab_array[line_iterator]}"
+
+		if [[ ! "$crontab_line_raw" =~ $valid_crontab_line_RE ]]; then
+			errcho "invalid crontab line '$crontab_line_raw'"
+			continue
+		fi
+
+		read -r -a crontab_line_splitted <<< "$crontab_line_raw"
+
+		# transform specials
+		case "${crontab_line_splitted}" in
+			'@hourly')					crontab_line_splitted=( '0' '*' '*' '*' '*' "${crontab_line_splitted[@]:$H}" );;
+			'@daily' | '@midnight')		crontab_line_splitted=( '0' '0' '*' '*' '*' "${crontab_line_splitted[@]:$H}" );;
+			'@weekly')					crontab_line_splitted=( '0' '0' '*' '*' '0' "${crontab_line_splitted[@]:$H}" );;
+			'@monthly')					crontab_line_splitted=( '0' '0' '1' '*' '*' "${crontab_line_splitted[@]:$H}" );;
+		esac
+
+		# for each field in line
+		for (( field_iterator=0; field_iterator <= CMD; field_iterator++ )); do
+			if (( field_iterator == CMD )); then # add a command to array
+				cmd_to_exec="${crontab_line_splitted[*]:$CMD}" # note: *, not @
+				_jobs_to_do_array+=( "$cmd_to_exec" )
+				break
+			fi
+
+			this_field="${crontab_line_splitted[field_iterator]}"
+			this_field_time_value="$( format_date_in_seconds "$start_time" "${cron_fields_dictionary[field_iterator]}" )"
+
+			if [[ "$this_field" =~ $asterisk_RE ]] && (( this_field_time_value % ${this_field##*/} != 0 )); then # handle * and */num
+				break
+			elif [[ "$this_field" =~ $number_RE ]] && (( this_field_time_value != this_field )); then # handle numbers
+				break
+			fi
+		done
+	done
+}
+
+function wait_for_next_minute {																		(( script_debug )) && debugcho
+
+	# if seconds is 00 at the start, wait for a full minute
+	while (( $( format_date_in_seconds -1 '%-S' ) % 60 == 0 )); do
+		snore 0.1
+	done
+
+	while (( $( format_date_in_seconds -1 '%-S' ) % 60 != 0 )); do
+		snore 0.1
+	done
+
+}
+
+function do_cron_jobs_indefinitely {																(( script_debug )) && debugcho
+
+	# templates
+
+	local -r event_type_for_log='warning'		# error|warning|info
+	local -r event_type_for_message=''			# error|warning|info|success
+
+	# consts
+
+	local -r -i loop_duration_in_s=60 # 60 seconds for production. you can change it for the debug purposes
+
+	# vars
+
+	local -a jobs_to_do=()
+	local -i time_before_execution_in_s time_after_execution_in_s execution_time_in_s job_iterator
+	local job_to_execute
+
+	# code
+
+	while true; do
+		time_before_execution_in_s="$( get_current_system_time_in_seconds )"
+
+		if pgrep_quiet 'selfupgrade|firmware-upgrade'; then
+			# do wait for Hive installation to be finished bc we don't have /hive atm and this could fire a false positive
+			print_controller_log_entry "$event_type_for_log" "Upgrade running, skipping checks..."
+			increment_checkup_counter 'upgrade_running' 'alarm'
+		elif pgrep_quiet 'S69hive|/hive/bin/hive|hive_autorun'; then
+			print_controller_log_entry "$event_type_for_log" "Hive starting, skipping checks..."
+		else
+			# do cron work
+			populate_array_with_actual_cron_jobs 'crontab' 'jobs_to_do'
+			for (( job_iterator=0; job_iterator < ${#jobs_to_do[@]}; job_iterator++ )); do
+				job_to_execute="${jobs_to_do[job_iterator]}"
+				# !!! possible flaw: we have no any time limits here
+				eval "$job_to_execute"
+				if (( $? == 0 )); then
+					increment_checkup_counter "$job_to_execute" 'idle'
+				else
+					increment_checkup_counter "$job_to_execute" 'alarm'
+				fi
+			done
+		fi
+
+		time_after_execution_in_s="$( get_current_system_time_in_seconds )"
+
+		(( execution_time_in_s = time_after_execution_in_s - time_before_execution_in_s ))
+
+		if (( execution_time_in_s > $( calculate_percent_from_number 80 "$loop_duration_in_s" ) )); then
+			print_controller_log_entry "$event_type_for_log" "Controller lagging: routine checkup took ${execution_time_in_s}s ( > 80% of an idle time which is ${loop_duration_in_s}s )"
+			increment_checkup_counter 'controller_lagging' 'alarm'
+		fi
+
+		wait_for_next_minute
+	done
+}
+
+
+# global consts
+
+declare -r -i assign_tag_to_worker=1 # can be in config file
+declare -r -i log_lines_to_tail=200
+declare -r controller_log_file='/config/hive-controller.log'
+declare -r unique_delimiter="d${RANDOM}e${RANDOM}l${RANDOM}i${RANDOM}m"
+
+declare -r -i exitcode_OK_NOTHING_HAPPENED=0
+declare -r -i exitcode_WARNING_SOMETHING_HAPPENED=1
+
+declare -r ntp_server='pool.ntp.org'
+
+
+# global sources
+
+source asic-model || echo 'ERROR: /hive/bin/asic-model not found'
+source colors || echo 'ERROR: /hive/bin/colors not found'
+source /hive/bin/hive-functions.sh || { echo 'ERROR: /hive/bin/hive-functions.sh not found'; exit 1; }
+
+
+# global exports
+
+[[ ! "$PATH" =~ (^|:)/hive/bin:/hive/sbin(:|$) ]] && export PATH="$PATH:/hive/bin:/hive/sbin"
+export LD_LIBRARY_PATH=/hive/lib
+
+
+# global vars
+
+declare time_source # ntpd|ntpdate|hive
+
+
+# crontab
+
+# shellcheck disable=SC2034
+declare -a crontab=(
+	'*/5 * * * *	checkup:is_miner_config_in_sync_with_FS'
+	'* * * * *		checkup:is_it_the_past'
+	'* * * * *		checkup:is_memory_full'
+	'* * * * *		checkup:is_build_updated'
+	'* * * * *		checkup:is_virus_found'
+	'* * * * *		checkup:are_logs_updated'
+	'* * * * *		checkup:is_overclock_profile_exist'
+	'* * * * *		checkup:is_hiveon_config_in_sync'
+	'*/5 * * * *	execute:agent_screen_dontattach'
+	'@hourly		checkup:is_NAND_in_RO_mode'
+	'@hourly		execute:cache_hive_ip'
+	'@midnight		print_checkup_summary_report'
+)
+#	'* * * * *		checkup:is_fw_signed' # forging ahead
+
+
+# main()
+
+#TODO:
+#watchdog alert
+#DNS checks
+#wd
+# extended virus checks
+
+parse_arguments "$@"
+initialize_dictionaries
+print_controller_log_entry 'info' "Controller $script_version started"
+check_ntpd
+
+do_cron_jobs_indefinitely
+
+# shellcheck disable=SC2154
+exit $(( exitcode_ERROR_SOMETHING_WEIRD )) # you should never see that they said

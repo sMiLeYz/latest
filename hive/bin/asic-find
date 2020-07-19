@@ -1,0 +1,49 @@
+#!/hive/sbin/bash
+
+
+#
+# Copyright (C) 2016-2020  Hiveon
+# Distributed under GNU GENERAL PUBLIC LICENSE 2.0
+# License information can be found in the LICENSE file or at https://github.com/minershive/hiveos-asic/blob/master/LICENSE
+#
+
+
+. asic-model
+
+function value() {
+	echo out > /sys/class/gpio/gpio$GPIO_LED_RED/direction
+	nohup /hive/sbin/bash -c "timeout -t $1 /hive/sbin/bash -c \
+		'while true; do echo 1 > /sys/class/gpio/gpio${GPIO_LED_RED}/value; sleep 1; echo 0 > /sys/class/gpio/gpio${GPIO_LED_RED}/value; done'; \
+		echo 0 > /sys/class/gpio/gpio${GPIO_LED_RED}/value" &
+}
+
+function direction() {
+	nohup /hive/sbin/bash -c "timeout -t $1 /hive/sbin/bash -c \
+		'while true; do echo high > /sys/class/gpio/gpio${GPIO_LED_RED}/direction; sleep 1; echo low > /sys/class/gpio/gpio${GPIO_LED_RED}/direction; done'; \
+		echo low > /sys/class/gpio/gpio${GPIO_LED_RED}/direction" &
+}
+
+case "$1" in
+	stop)
+		ps w | grep time | grep while | grep -v '{timeout}' | awk '{print $1}' | xargs kill
+		if [[ $GPIO_PATH == "value" ]]; then
+			echo 0 > /sys/class/gpio/gpio${GPIO_LED_RED}/value
+		elif [[ $GPIO_PATH == "direction" ]]; then
+			echo low > /sys/class/gpio/gpio${GPIO_LED_RED}/direction
+		fi
+	;;
+	*)
+		if [[ $1 =~ ^[0-9]+$ ]]; then
+			if [[ ! -e /sys/class/gpio/gpio$GPIO_LED_RED ]]; then
+				echo "$GPIO_LED_RED" > /sys/class/gpio/export
+			fi
+			if [[ $GPIO_PATH == "value" ]]; then
+				value $(($1 * 60))
+			elif [[ $GPIO_PATH == "direction" ]]; then
+				direction $(($1 * 60))
+			fi
+		else
+			echo "Example: 'asic-find 15' for 15 minutes"
+		fi
+	;;
+esac

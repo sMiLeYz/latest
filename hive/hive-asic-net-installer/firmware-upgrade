@@ -1,0 +1,109 @@
+#!/bin/sh -e
+
+
+#
+# Copyright (C) 2016-2020  Hiveon
+# Distributed under GNU GENERAL PUBLIC LICENSE 2.0
+# License information can be found in the LICENSE file or at https://github.com/minershive/hiveos-asic/blob/master/LICENSE
+#
+
+
+export PATH=/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin:/hive/bin:/hive/sbin
+#set -e
+
+rm -rf /config/hive/hive
+rm -rf /hive
+rm -rf /tmp/*.log
+
+file=/tmp/$$
+mkdir $file
+cd $file
+URL="$1"
+WORKER_NAME="$2"
+#curl "$URL" | tar xvz
+filename=$(echo "$URL" | awk -F \/ '{print $NF}')
+FARM_HASH=$(echo "$filename" | awk -F \- '{print $NF}' | sed s/.tar.gz//)
+HIVE_HOST_URL=$(echo "$URL" | grep 'http://download' | grep 'os' | grep '/asic/' | awk -F \/asic '{print $1}' | sed s/'http:\/\/download'/'http:\/\/api'/)
+
+trap atexit 0
+
+atexit() {
+        rm -rf $file
+        umount $file.boot 2>/dev/null || true
+        rmdir $file.boot 2>/dev/null || true
+        sync
+        if [ ! $ok ]; then # $ok have been set in runme.sh
+            echo -e "System upgrade failed"
+        fi
+}
+
+#exec 2>/tmp/upgrade_result
+
+#tar zxf -
+#tar -xvf "$filename"
+curl "$URL" | tar xvz
+if [ ! -f ubi_info ]; then
+    echo -e "${RED}Incorrect firmware!!!${NOCOLOR}"
+    rm /tmp/*
+    exit 1
+else
+
+if [ ! -d /mnt/config ]; then
+    mkdir /mnt/config
+fi
+
+ubiattach /dev/ubi_ctrl -m 2
+mount -t ubifs ubi1:rootfs /mnt/config
+
+if [ ! -d /mnt/config/home/usr_config ]
+then
+    mkdir /mnt/config/home/usr_config
+fi
+
+sed -i '/\#\#\# HIVE HECK \#\#\#/,$d' /config/network.conf
+
+cat >> /config/network.conf <<FILEEOF
+
+### HIVE HECK ###
+if [ ! -L /hive-config ] && [ ! -e /hive-config ] && [ -d /config/hive ]; then
+	ln -s /config/hive/hive-config /hive-config
+	case "\$PATH" in
+		*'/hive/bin:/hive/sbin'*)	: ok good to go								;;
+		*)							export PATH="\$PATH:/hive/bin:/hive/sbin"	;;
+	esac
+	export LD_LIBRARY_PATH=/hive/lib
+	cp -rf /hive/share/S9/S69hive /etc/rcS.d/
+	cp -rf /hive/share/S9/.profile /home/root/
+	/hive/bin/hive
+fi
+FILEEOF
+
+if [ "$(echo "$FARM_HASH" | wc -c)" -eq 41 ]; then
+        echo "$FARM_HASH" > /config/FARM_HASH
+fi
+if [ ! -z "$HIVE_HOST_URL" ]; then
+        echo "$HIVE_HOST_URL" > /config/HIVE_HOST_URL
+fi
+if [ ! -z "$WORKER_NAME" ]; then
+        echo "$WORKER_NAME" > /config/HIVE_WORKER_NAME
+fi
+
+sync
+
+cp -r /config/* /mnt/config/home/usr_config/
+umount /mnt/config
+ubidetach -d 1 /dev/ubi_ctrl
+
+if [ -f runme.sh ]; then
+        sh runme.sh
+        echo -e "${GREEN}Firmware upgrade complete. Rebooting...${NOCOLOR}"
+else
+    echo -e "${RED}Incorrect firmware!!!${NOCOLOR}"
+    exit 1
+fi
+fi
+
+#cat /tmp/upgrade_result
+
+sleep 1; /sbin/reboot -f
+

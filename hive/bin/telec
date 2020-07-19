@@ -1,0 +1,4 @@
+#!/hive/sbin/bash
+
+echo "Teleconsole deprecated. Use hssh"
+exit 1
