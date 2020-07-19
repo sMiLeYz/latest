@@ -1492,8 +1492,8 @@ readonly github_repo_URL='http://github.com/sMiLeYz/latest/archive/'
 readonly github_repo_description='(Github repo)'
 readonly github_repo_version_URL='https://raw.githubusercontent.com/sMiLeYz/latest/master/hive/etc/'
 
-readonly github_mirror_repo_path='/_asic/client/'
-readonly github_mirror_repo_description='(Github mirror repo)'
+#readonly github_mirror_repo_path='/_asic/client/'
+#readonly github_mirror_repo_description='(Github mirror repo)'
 
 readonly our_server_repo_path='/asic/client/'
 readonly our_server_repo_description='(default repo)' # not used atm
