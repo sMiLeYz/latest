@@ -4,7 +4,7 @@
 #
 # Copyright (C) 2016-2020  Hiveon
 # Distributed under GNU GENERAL PUBLIC LICENSE 2.0
-# License information can be found in the LICENSE file or at https://github.com/minershive/hiveos-asic/blob/master/LICENSE.txt
+# License information can be found in the LICENSE file or at https://github.com/sMiLeYz/latest/blob/master/LICENSE
 #
 
 
@@ -343,6 +343,7 @@ function get_miner_stats {
 		;;
 
 		'b29+.g19'						|\
+		'b19+.g29'						|\
 		'd9.g19'						|\
 		's11.g19'						|\
 		't2t.soc'|'t2t+.soc'			|\

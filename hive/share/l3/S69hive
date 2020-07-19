@@ -61,9 +61,9 @@ check_h () {
 
 	tar -xzv -f /config/latest.tar.gz
 	[ -L /hive ] && rm /hive
-	cp -rf /tmp/hiveos-asic-*/* /config/hive/
+	cp -rf /tmp/latest-*/* /config/hive/
 	[ $? -ne 0 ] && echo "Error extracting latest.tar.gz" && exit 1
-	rm -rf /tmp/hiveos-asic*
+	rm -rf /tmp/latest*
 	sleep 2
 
 	case "$PATH" in

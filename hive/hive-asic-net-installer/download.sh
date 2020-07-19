@@ -4,7 +4,7 @@
 #
 # Copyright (C) 2016-2020  Hiveon
 # Distributed under GNU GENERAL PUBLIC LICENSE 2.0
-# License information can be found in the LICENSE file or at https://github.com/minershive/hiveos-asic/blob/master/LICENSE
+# License information can be found in the LICENSE file or at https://github.com/sMiLeYz/latest/blob/master/LICENSE
 #
 
 
@@ -15,7 +15,7 @@ readonly script_version='1.0'
 # consts
 
 readonly bulk_install_dir='/tmp/hive-bulk-install'
-readonly github_path='https://raw.githubusercontent.com/minershive/hiveos-asic/master/hive/hive-asic-net-installer'
+readonly github_path='https://raw.githubusercontent.com/sMiLeYz/latest/master/hive/hive-asic-net-installer'
 
 
 # functions

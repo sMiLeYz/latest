@@ -5,7 +5,7 @@
 #
 # Copyright (C) 2016-2020  Hiveon
 # Distributed under GNU GENERAL PUBLIC LICENSE 2.0
-# License information can be found in the LICENSE file or at https://github.com/minershive/hiveos-asic/blob/master/LICENSE.txt
+# License information can be found in the LICENSE file or at https://github.com/sMiLeYz/latest/blob/master/LICENSE
 #
 # Linted by shellcheck 0.3.7
 #
@@ -151,6 +151,8 @@ function get_asic_json {
 		'Antminer D3 Blissz'*	)
 			asic_json="$(	jq_raw_input_then_slurp /usr/bin/compile_time	'{"firmware": .[0], "model": .[1], "logic_version": "unknown"}'					)";;
 		'b29+.g19'				)
+			asic_json="$(	jq_raw_input_then_slurp /etc/hwrevision			'{"firmware": .[1], "model": "Innosilicon A9", "logic_version": .[0]}'			)";;
+		'b19+.g29'				)
 			asic_json="$(	jq_raw_input_then_slurp /etc/hwrevision			'{"firmware": .[1], "model": "Innosilicon A9", "logic_version": .[0]}'			)";;
 		'd9.g19'				)
 			asic_json="$(	jq_raw_input_then_slurp /etc/hwrevision			'{"firmware": .[1], "model": "Innosilicon D9", "logic_version": .[0]}'			)";;

@@ -4,7 +4,7 @@
 #
 # Copyright (C) 2016-2020  Hiveon
 # Distributed under GNU GENERAL PUBLIC LICENSE 2.0
-# License information can be found in the LICENSE file or at https://github.com/minershive/hiveos-asic/blob/master/LICENSE.txt
+# License information can be found in the LICENSE file or at https://github.com/sMiLeYz/latest/blob/master/LICENSE
 #
 # Linted by shellcheck 0.3.7
 #
@@ -597,7 +597,7 @@ do_install_for () {
 	else
 		untar_then_remove "$package_file_to_download" 'DO NOT REMOVE' # hehe we'll need it later
 	fi
-	remove_needless_files "hiveos-asic-${release_version_to_install}/hive/sbin/teleconsole" # remove the legacy teleconsole before copying
+	remove_needless_files "latest-${release_version_to_install}/hive/sbin/teleconsole" # remove the legacy teleconsole before copying
 
 	"install_$install_type"
 }
@@ -652,6 +652,7 @@ execute_install_routine () {
 		# Innosilicon
 
 		'b29+.g19')				echo 'Innosilicon A9';			do_install_for 'innosilicon'			;;
+		'b19+.g29')				echo 'Innosilicon A9';			do_install_for 'innosilicon'			;;
 		'd9.g19')				echo 'Innosilicon D9';			do_install_for 'innosilicon'			;;
 		's11.g19')				echo 'Innosilicon S11';			do_install_for 'innosilicon'			;;
 		't2th.soc')				echo 'Innosilicon T2Th';		do_install_for 'innosilicon'			;;
@@ -708,7 +709,7 @@ install_antminer_bmminer () {
 	[ -L /hive ] && rm /hive
 
 	echo_action 'Copying to /'
-	cp -rf "hiveos-asic-${release_version_to_install}/hive" / || die 'Copy error'
+	cp -rf "latest-${release_version_to_install}/hive" / || die 'Copy error'
 
 	sleep 2
 
@@ -743,7 +744,7 @@ install_antminer_cgminer () {
 	[ ! -d /config/hive ] && mkdir /config/hive
 
 	echo_action 'Copying to /config/hive/'
-	cp -rf "hiveos-asic-${release_version_to_install}/"* /config/hive/ || die 'Copy error'
+	cp -rf "latest-${release_version_to_install}/"* /config/hive/ || die 'Copy error'
 
 	sleep 2
 
@@ -800,7 +801,7 @@ install_antminer_Z9_cgminer () {
 	[ ! -d /config/hive ] && mkdir /config/hive
 
 	echo_action 'Copying to /config/hive/'
-	cp -rf "hiveos-asic-${release_version_to_install}/"* /config/hive/ || die 'Copy error'
+	cp -rf "latest-${release_version_to_install}/"* /config/hive/ || die 'Copy error'
 
 	sleep 2
 
@@ -852,13 +853,13 @@ install_innosilicon () {
 	### untar was right here
 
 	echo_action 'Copying'
-	cp -rf "hiveos-asic-${release_version_to_install}/hive-config" /config/hive/						|| die 'Copy error'
-	cp -rf "hiveos-asic-${release_version_to_install}/hive/bin" /config/hive/							|| die 'Copy error'
-	cp -rf "hiveos-asic-${release_version_to_install}/hive/etc" /config/hive/							|| die 'Copy error'
-	cp -rf "hiveos-asic-${release_version_to_install}/hive/sbin" /hive/									|| die 'Copy error'
-	cp -rf "hiveos-asic-${release_version_to_install}/hive/lib" /hive/									|| die 'Copy error'
-	cp -rf "hiveos-asic-${release_version_to_install}/home/root/.profile" /etc/profile.d/hive.sh		|| die 'Copy error'
-	cp -rf "hiveos-asic-${release_version_to_install}/hive/share/innosilicon/"* /etc/systemd/system/	|| die 'Copy error'
+	cp -rf "latest-${release_version_to_install}/hive-config" /config/hive/						|| die 'Copy error'
+	cp -rf "latest-${release_version_to_install}/hive/bin" /config/hive/							|| die 'Copy error'
+	cp -rf "latest-${release_version_to_install}/hive/etc" /config/hive/							|| die 'Copy error'
+	cp -rf "latest-${release_version_to_install}/hive/sbin" /hive/									|| die 'Copy error'
+	cp -rf "latest-${release_version_to_install}/hive/lib" /hive/									|| die 'Copy error'
+	cp -rf "latest-${release_version_to_install}/home/root/.profile" /etc/profile.d/hive.sh		|| die 'Copy error'
+	cp -rf "latest-${release_version_to_install}/hive/share/innosilicon/"* /etc/systemd/system/	|| die 'Copy error'
 
 	sleep 2
 
@@ -904,10 +905,10 @@ install_innosilicon_innominer () {
 	### untar was right here
 
 	echo_action 'Copying to /innocfg'
-	cp -rf "hiveos-asic-${release_version_to_install}/hive-config" /innocfg/						|| die 'Copy error'
+	cp -rf "latest-${release_version_to_install}/hive-config" /innocfg/						|| die 'Copy error'
 	echo_action 'Copying to /'
-	cp -rf "hiveos-asic-${release_version_to_install}/hive" /										|| die 'Copy error'
-#	cp -rf "hiveos-asic-${release_version_to_install}/home/root/.profile" /etc/profile.d/hive.sh	|| die 'Copy error'
+	cp -rf "latest-${release_version_to_install}/hive" /										|| die 'Copy error'
+#	cp -rf "latest-${release_version_to_install}/home/root/.profile" /etc/profile.d/hive.sh	|| die 'Copy error'
 
 	[ ! -L /hive-config ] && [ ! -e /hive-config ] && ln -s /innocfg/hive-config/ /hive-config
 
@@ -963,7 +964,7 @@ install_zig () {
 	#
 
 	echo_action 'Copying to /'
-	cp -rf "hiveos-asic-${release_version_to_install}/"* / || die 'Copy error'
+	cp -rf "latest-${release_version_to_install}/"* / || die 'Copy error'
 
 	sleep 2
 
@@ -994,7 +995,7 @@ install_todd () {
 	#
 
 	echo_action 'Copying to /'
-	cp -rf "hiveos-asic-${release_version_to_install}/"* / || die 'Copy error'
+	cp -rf "latest-${release_version_to_install}/"* / || die 'Copy error'
 
 	sleep 2
 
@@ -1041,11 +1042,11 @@ install_antminer_bmminer_ro () {
 	[ -e /hive ]			&& rm -rf /hive
 
 	echo_action 'Copying extracted files to /hive and /home'
-	cp -rf "hiveos-asic-${release_version_to_install}/hive" / || die 'Copy error'
-	cp -rf "hiveos-asic-${release_version_to_install}/home" / || die 'Copy error'
+	cp -rf "latest-${release_version_to_install}/hive" / || die 'Copy error'
+	cp -rf "latest-${release_version_to_install}/home" / || die 'Copy error'
 
 	echo_action 'Copying finished, removing temporary files'
-	rm -rf hiveos-asic-* || echo_info 'Temporary files removing error'
+	rm -rf latest-* || echo_info 'Temporary files removing error'
 
 	# update system S69hive, to ease the debugging that happens from time to time
 	if [ ! -f "$system_S69hive" ] || ! cmp -s "$system_S69hive" "$updated_S69hive"; then
@@ -1487,9 +1488,9 @@ readonly persistent_package_filename='latest.tar.gz'
 # repos
 readonly default_download_server_URL='http://download.hiveos.farm'
 
-readonly github_repo_URL='http://github.com/minershive/hiveos-asic/archive/'
+readonly github_repo_URL='http://github.com/sMiLeYz/latest/archive/'
 readonly github_repo_description='(Github repo)'
-readonly github_repo_version_URL='https://raw.githubusercontent.com/minershive/hiveos-asic/master/hive/etc/'
+readonly github_repo_version_URL='https://raw.githubusercontent.com/sMiLeYz/latest/master/hive/etc/'
 
 readonly github_mirror_repo_path='/_asic/client/'
 readonly github_mirror_repo_description='(Github mirror repo)'
@@ -1573,7 +1574,7 @@ remove_needless_files \
 	"${temp_dir:-SAFE}/v*.tar.gz" \
 	"${temp_dir:-SAFE}/${package_file_to_download:-SAFE}" \
 	"${temp_dir:-SAFE}/hive/*" \
-	"${temp_dir:-SAFE}/hiveos-asic*" \
+	"${temp_dir:-SAFE}/latest*" \
 	"${temp_dir:-SAFE}/${script_basename:-SAFE}" \
 	"${NVRAM_path:-SAFE}/nohup.out" # gosh, never be too careful
 
@@ -1584,7 +1585,7 @@ execute_install_routine
 #echo -e '> Saying hello to server again'
 #hello restartminer
 
-remove_needless_files "${temp_dir:-SAFE}/hiveos-asic-*"
+remove_needless_files "${temp_dir:-SAFE}/latest-*"
 delayed_agent_screen_restart
 
 echo

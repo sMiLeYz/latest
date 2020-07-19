@@ -4,7 +4,7 @@
 #
 # Copyright (C) 2016-2020  Hiveon
 # Distributed under GNU GENERAL PUBLIC LICENSE 2.0
-# License information can be found in the LICENSE file or at https://github.com/minershive/hiveos-asic/blob/master/LICENSE
+# License information can be found in the LICENSE file or at https://github.com/sMiLeYz/latest/blob/master/LICENSE
 #
 # Linted by shellcheck 0.3.7
 #
@@ -331,7 +331,17 @@ function set_ASIC_constants {
 			HASH='hs'
 			MAX_FAN_RPM='6000'
 		;;
-
+		
+		'b19+.g29' )
+			MOUNT=''
+			ASIC_ALGO='Equihash'
+			THIS_MINER_NAME='cgminer'
+			LOG_PATH=''
+			CONFIG_PATH='/config/cgminer.conf'
+			HASH='hs'
+			MAX_FAN_RPM='6000'
+		;;
+		
 		'd9.g19' )
 			MOUNT=''
 			ASIC_ALGO='Blake256R14'

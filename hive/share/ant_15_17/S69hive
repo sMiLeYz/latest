@@ -4,7 +4,7 @@
 #
 # Copyright (C) 2016-2020  Hiveon
 # Distributed under GNU GENERAL PUBLIC LICENSE 2.0
-# License information can be found in the LICENSE file or at https://github.com/minershive/hiveos-asic/blob/master/LICENSE
+# License information can be found in the LICENSE file or at https://github.com/sMiLeYz/latest/blob/master/LICENSE
 #
 # Linted by shellcheck 0.3.7
 #
@@ -311,14 +311,14 @@ deploy_hive () {
 	tar_output="$( tar -xzv -f "$persistent_package_filename_w_path" 2>&1 )" || die "${tar_output}\n\nError extracting $persistent_package_filename_w_path, exiting"
 
 	[ -L /hive ] && rm /hive
-	rm -rf hiveos-asic-*/hive/sbin/teleconsole # remove the legacy before copying
+	rm -rf latest-*/hive/sbin/teleconsole # remove the legacy before copying
 
 	echo_action 'Copying extracted files to /hive and /home'
-	cp -rf hiveos-asic-*/hive / || die 'Error copying files to /hive, exiting'
-	cp -rf hiveos-asic-*/home / || die 'Error copying files to /home, exiting'
+	cp -rf latest-*/hive / || die 'Error copying files to /hive, exiting'
+	cp -rf latest-*/home / || die 'Error copying files to /home, exiting'
 
 	echo_action 'Copying finished, removing temporary files'
-	rm -rf hiveos-asic*  || echo_info 'Temporary files removing error'
+	rm -rf latest*  || echo_info 'Temporary files removing error'
 	[ -f "${NVRAM_path}/${dev_build_file}" ] && rm -f "${NVRAM_path}/${dev_build_file}"
 
 	sleep 2
